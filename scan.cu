@@ -15,7 +15,6 @@ __global__ void partialScan(unsigned int *d_in,
     int tx = threadIdx.x;
     int bx = blockIdx.x;
     int index = BLOCK_WIDTH * bx + tx;
-    size_t temp_size = n % BLOCK_WIDTH < BLOCK_WIDTH ? n % BLOCK_WIDTH : BLOCK_WIDTH;
 
     if(index < n) {
         temp[tx] = d_in[index];
@@ -23,21 +22,21 @@ __global__ void partialScan(unsigned int *d_in,
     __syncthreads();
 
     // Perform the actual scan
-    for(int offset = 1; offset < temp_size; offset <<= 1) {
-        if(tx + offset < temp_size) {
+    for(int offset = 1; offset < BLOCK_WIDTH; offset <<= 1) {
+        if(tx + offset < BLOCK_WIDTH) {
             temp[tx + offset] += temp[tx];
         }
         __syncthreads();
     }
 
     // Shift when copying the result so as to make it an exclusive scan
-    if(index + 1 < n) {
+    if(tx + 1 < BLOCK_WIDTH) {
         d_out[index + 1] = temp[tx];
     }
     d_out[0] = 0;
 
     // Store the total sum of each block
-    d_total[bx] = temp[temp_size - 1];
+    d_total[bx] = temp[BLOCK_WIDTH - 1];
 }
 
 // Compute a map on a partial scan to create a total scan from
@@ -61,8 +60,13 @@ void totalScan(unsigned int *d_in, unsigned int *d_out, size_t n) {
     partialScan<<<numBlocks, BLOCK_WIDTH>>>(d_in, d_out, d_total, n);
 
     if(numBlocks > 1) {
-        totalScan(d_total, d_total, numBlocks);
-        mapScan<<<numBlocks, BLOCK_WIDTH>>>(d_out, d_total, n);
+        unsigned int *d_total_scanned;
+        cudaMalloc(&d_total_scanned, sizeof(unsigned int) * numBlocks);
+
+        totalScan(d_total, d_total_scanned, numBlocks);
+        mapScan<<<numBlocks, BLOCK_WIDTH>>>(d_out, d_total_scanned, n);
+
+        cudaFree(d_total_scanned);
     }
 
     cudaFree(d_total);
