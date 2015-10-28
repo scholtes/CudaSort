@@ -52,6 +52,7 @@ __global__ void mapScan(unsigned int *d_array, unsigned int *d_total, size_t n) 
 }
 
 
+// Compute exclusive sum scan for arbitrary sized array (device pointers as input)
 void totalScan(unsigned int *d_in, unsigned int *d_out, size_t n) {
     size_t numBlocks = CEILING_DIVIDE(n, BLOCK_WIDTH);
     unsigned int *d_total;
@@ -68,7 +69,54 @@ void totalScan(unsigned int *d_in, unsigned int *d_out, size_t n) {
 }
 
 
-int main(int argc, char **argv) {
+////////////////////////////////////////////////////////////////////////////////
 
+
+// Wrapper for totalScan (host pointers as input)
+void totalScanHost(unsigned int *h_in, unsigned int *h_out, size_t n) {
+    unsigned int *d_in;
+    unsigned int *d_out;
+    size_t memsize = sizeof(unsigned int) * n;
+
+    cudaMalloc(&d_in, memsize);
+    cudaMalloc(&d_out, memsize);
+
+    cudaMemcpy(d_in, h_in, memsize, cudaMemcpyHostToDevice);
+
+    totalScan(d_in, d_out, n);
+
+    cudaMemcpy(h_out, d_out, memsize, cudaMemcpyDeviceToHost);
+
+    cudaFree(d_in);
+    cudaFree(d_out);
+}
+
+
+int main(int argc, char **argv) {
+    unsigned int *h_in;
+    unsigned int *h_out;
+    size_t memsize = sizeof(unsigned int) * TEST_SIZE;
+
+    h_in = (unsigned int*)malloc(memsize);
+    h_out = (unsigned int*)malloc(memsize);
+
+    // Test values 1 .. TEST_SIZE
+    for(int i=0; i<TEST_SIZE; i++){ h_in[i] = i+1; }
+
+    // Compute
+    totalScanHost(h_in, h_out, TEST_SIZE);
+
+    // Print input
+    printf("h_in = [ ");
+    for(int i=0; i<TEST_SIZE; i++){ printf("%d ", h_in[i]); }
+    printf("];\n");
+
+    // Print output
+    printf("h_out = [ ");
+    for(int i=0; i<TEST_SIZE; i++){ printf("%d ", h_out[i]); }
+    printf("];\n");
+
+    free(h_in);
+    free(h_out);
     return 0;
 }
