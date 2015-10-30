@@ -1,10 +1,22 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#define TEST_SIZE 35
-#define RAND_RANGE 10
+#define TEST_SIZE 16
+#define RAND_RANGE 100
 #define BLOCK_WIDTH 4
 #define CEILING_DIVIDE(X, Y) (1 + (((X) - 1) / (Y)))
+
+void printTest(unsigned int *d_arr, size_t size) {
+    unsigned int *h_arr;
+    h_arr = (unsigned int*)malloc(sizeof(unsigned int)*size);
+    cudaMemcpy(h_arr, d_arr, sizeof(unsigned int)*size, cudaMemcpyDeviceToHost);
+
+    printf("h_testVals = [ ");
+    for(int i=0; i<size; i++){ printf("%d ", h_arr[i]); }
+    printf("];\n");
+
+    free(h_arr);
+}
 
 // Computes a blockwise exclusive sum scan
 __global__ void partialScan(unsigned int *d_in,
@@ -51,6 +63,51 @@ __global__ void mapScan(unsigned int *d_array, unsigned int *d_total, size_t n) 
     }
 }
 
+// Compute the predicates for radix sort
+__global__ void mapPredicate(unsigned int *d_zeros,
+                             unsigned int *d_ones,
+                             unsigned int *d_in,
+                             int bit,
+                             size_t n)
+{
+    int tx = threadIdx.x;
+    int bx = blockIdx.x;
+    int index = BLOCK_WIDTH * bx + tx;
+
+    if(index < n) {
+        unsigned int isOne = (d_in[index] >> bit) & 1;
+        d_ones[index] = isOne;
+        d_zeros[index] = 1 - isOne;
+    }
+}
+
+// Given the computed addresses, perform the scatter step for radix sort
+__global__ void scatter(unsigned int *d_inVals,
+                        unsigned int *d_outVals,
+                        unsigned int *d_inPos,
+                        unsigned int *d_outPos,
+                        unsigned int *d_zerosScan,
+                        unsigned int *d_onesScan,
+                        unsigned int *d_zerosPredicate,
+                        unsigned int *d_onesPredicate,
+                        size_t n)
+{
+    int tx = threadIdx.x;
+    int bx = blockIdx.x;
+    int index = BLOCK_WIDTH * bx + tx;
+    int offset = d_zerosScan[n - 1] + d_zerosPredicate[n - 1];
+
+    if(index < n) {
+        int scatterIdx;
+        if(d_zerosPredicate[index]) {
+            scatterIdx = d_zerosScan[index];
+        } else {
+            scatterIdx = d_onesScan[index] + offset;
+        }
+        d_outVals[scatterIdx] = d_inVals[index];
+        d_outPos[scatterIdx] = d_inPos[index];
+    }
+}
 
 // Compute exclusive sum scan for arbitrary sized array (device pointers as input)
 void totalScan(unsigned int *d_in, unsigned int *d_out, size_t n) {
@@ -82,23 +139,60 @@ void radix(unsigned int* const d_inputVals,
            unsigned int* const d_outputPos,
            const size_t numElems)
 {
-    unsigned int *inVals;
-    unsigned int *inPos;
-    unsigned int *zerosPredicate;
-    unsigned int *onesPredicate;
-    unsigned int *zerosScan;
-    unsigned int *onesScan;
+    unsigned int *d_inVals;
+    unsigned int *d_inPos;
+    unsigned int *d_zerosPredicate;
+    unsigned int *d_onesPredicate;
+    unsigned int *d_zerosScan;
+    unsigned int *d_onesScan;
+    size_t memsize = sizeof(unsigned int) * numElems;
+    size_t numBlocks = CEILING_DIVIDE(numElems, BLOCK_WIDTH);
 
-    for(int bit = 1; bit <= 1; bit++) {
+    cudaMalloc(&d_inVals, memsize);
+    cudaMalloc(&d_inPos, memsize);
+    cudaMalloc(&d_zerosPredicate, memsize);
+    cudaMalloc(&d_onesPredicate, memsize);
+    cudaMalloc(&d_zerosScan, memsize);
+    cudaMalloc(&d_onesScan, memsize);
 
+    cudaMemcpy(d_inVals, d_inputVals, memsize, cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_inPos, d_inputPos, memsize, cudaMemcpyDeviceToDevice);
+
+    for(int bit = 0; bit < 32; bit++) {
+        mapPredicate<<<numBlocks, BLOCK_WIDTH>>>(
+            d_zerosPredicate,
+            d_onesPredicate,
+            d_inVals,
+            bit,
+            numElems
+        );
+        totalScan(d_zerosPredicate, d_zerosScan, numElems);
+        totalScan(d_onesPredicate, d_onesScan, numElems);
+        /*printTest(d_zerosPredicate, numElems);
+        printTest(d_onesPredicate, numElems);
+        printTest(d_zerosScan, numElems);
+        printTest(d_onesScan, numElems);*/
+        scatter<<<numBlocks, BLOCK_WIDTH>>>(
+            d_inVals,
+            d_outputVals,
+            d_inPos,
+            d_outputPos,
+            d_zerosScan,
+            d_onesScan,
+            d_zerosPredicate,
+            d_onesPredicate,
+            numElems
+        );
+        cudaMemcpy(d_inVals, d_outputVals, memsize, cudaMemcpyDeviceToDevice);
+        cudaMemcpy(d_inPos, d_outputPos, memsize, cudaMemcpyDeviceToDevice);
     }
 
-    cudaFree(inVals);
-    cudaFree(inPos);
-    cudaFree(zerosPredicate);
-    cudaFree(onesPredicate);
-    cudaFree(zerosScan);
-    cudaFree(onesScan);
+    cudaFree(d_inVals);
+    cudaFree(d_inPos);
+    cudaFree(d_zerosPredicate);
+    cudaFree(d_onesPredicate);
+    cudaFree(d_zerosScan);
+    cudaFree(d_onesScan);
 }
 
 
@@ -154,7 +248,7 @@ int main(int argc, char **argv) {
     h_outPos = (unsigned int*)malloc(memsize);
 
     // Random test values (seeded)
-    for(int i=0; i<TEST_SIZE; i++){ h_inVals[i] = rand() % RAND_RANGE; }
+    for(int i=0; i<TEST_SIZE; i++){ h_inVals[i] = i+1; }//rand() % RAND_RANGE; }
     // Test positions 0 ... TEST_SIZE
     for(int i=0; i<TEST_SIZE; i++){ h_inPos[i] = i; }
 
