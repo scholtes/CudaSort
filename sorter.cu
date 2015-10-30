@@ -1,9 +1,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#define TEST_SIZE 16
+#define TEST_SIZE (424*520)
 #define RAND_RANGE 100
-#define BLOCK_WIDTH 4
+#define BLOCK_WIDTH 32
 #define CEILING_DIVIDE(X, Y) (1 + (((X) - 1) / (Y)))
 
 void printTest(unsigned int *d_arr, size_t size) {
@@ -12,7 +12,7 @@ void printTest(unsigned int *d_arr, size_t size) {
     cudaMemcpy(h_arr, d_arr, sizeof(unsigned int)*size, cudaMemcpyDeviceToHost);
 
     printf("h_testVals = [ ");
-    for(int i=0; i<size; i++){ printf("%d ", h_arr[i]); }
+    for(int i=0; i<size; i++){ printf("%2d ", h_arr[i]); }
     printf("];\n");
 
     free(h_arr);
@@ -31,7 +31,7 @@ __global__ void partialScan(unsigned int *d_in,
 
     if(index < n) {
         temp[tx] = d_in[index];
-    }
+    } else { temp[tx] = 0; }
     __syncthreads();
 
     // Perform the actual scan
@@ -43,7 +43,7 @@ __global__ void partialScan(unsigned int *d_in,
     }
 
     // Shift when copying the result so as to make it an exclusive scan
-    if(tx + 1 < BLOCK_WIDTH) {
+    if(tx +1 < BLOCK_WIDTH && index + 1 < n) {
         d_out[index + 1] = temp[tx];
     }
     d_out[0] = 0;
@@ -67,7 +67,7 @@ __global__ void mapScan(unsigned int *d_array, unsigned int *d_total, size_t n) 
 __global__ void mapPredicate(unsigned int *d_zeros,
                              unsigned int *d_ones,
                              unsigned int *d_in,
-                             int bit,
+                             unsigned int bit,
                              size_t n)
 {
     int tx = threadIdx.x;
@@ -104,8 +104,10 @@ __global__ void scatter(unsigned int *d_inVals,
         } else {
             scatterIdx = d_onesScan[index] + offset;
         }
-        d_outVals[scatterIdx] = d_inVals[index];
-        d_outPos[scatterIdx] = d_inPos[index];
+        if(scatterIdx < n) { //sanity check
+            d_outVals[scatterIdx] = d_inVals[index];
+            d_outPos[scatterIdx] = d_inPos[index];
+        }
     }
 }
 
@@ -114,14 +116,17 @@ void totalScan(unsigned int *d_in, unsigned int *d_out, size_t n) {
     size_t numBlocks = CEILING_DIVIDE(n, BLOCK_WIDTH);
     unsigned int *d_total;
     cudaMalloc(&d_total, sizeof(unsigned int) * numBlocks);
+    cudaMemset(d_total, 0, sizeof(unsigned int) * numBlocks);
 
     partialScan<<<numBlocks, BLOCK_WIDTH>>>(d_in, d_out, d_total, n);
 
     if(numBlocks > 1) {
         unsigned int *d_total_scanned;
         cudaMalloc(&d_total_scanned, sizeof(unsigned int) * numBlocks);
+        cudaMemset(d_total_scanned, 0, sizeof(unsigned int) * numBlocks);
 
         totalScan(d_total, d_total_scanned, numBlocks);
+
         mapScan<<<numBlocks, BLOCK_WIDTH>>>(d_out, d_total_scanned, n);
 
         cudaFree(d_total_scanned);
@@ -158,7 +163,10 @@ void radix(unsigned int* const d_inputVals,
     cudaMemcpy(d_inVals, d_inputVals, memsize, cudaMemcpyDeviceToDevice);
     cudaMemcpy(d_inPos, d_inputPos, memsize, cudaMemcpyDeviceToDevice);
 
-    for(int bit = 0; bit < 32; bit++) {
+    for(unsigned int bit = 0; bit < 32; bit++) {
+        cudaMemset(d_zerosScan, 0, memsize);
+        cudaMemset(d_onesScan, 0, memsize);
+
         mapPredicate<<<numBlocks, BLOCK_WIDTH>>>(
             d_zerosPredicate,
             d_onesPredicate,
@@ -166,12 +174,10 @@ void radix(unsigned int* const d_inputVals,
             bit,
             numElems
         );
+        
         totalScan(d_zerosPredicate, d_zerosScan, numElems);
         totalScan(d_onesPredicate, d_onesScan, numElems);
-        /*printTest(d_zerosPredicate, numElems);
-        printTest(d_onesPredicate, numElems);
-        printTest(d_zerosScan, numElems);
-        printTest(d_onesScan, numElems);*/
+
         scatter<<<numBlocks, BLOCK_WIDTH>>>(
             d_inVals,
             d_outputVals,
@@ -256,17 +262,17 @@ int main(int argc, char **argv) {
     radixHost(h_inVals, h_inPos, h_outVals, h_outPos, TEST_SIZE);
 
     // Print input
-    printf("h_inVals = [ ");
-    for(int i=0; i<TEST_SIZE; i++){ printf("%d ", h_inVals[i]); }
-    printf("];\nh_inPos = [ ");
-    for(int i=0; i<TEST_SIZE; i++){ printf("%d ", h_inPos[i]); }
+    printf("h_inVals =   [ ");
+    for(int i=0; i<TEST_SIZE; i++){ printf("%2d ", h_inVals[i]); }
+    printf("];\nh_inPos =    [ ");
+    for(int i=0; i<TEST_SIZE; i++){ printf("%2d ", h_inPos[i]); }
     printf("];\n");
 
     // Print output
-    printf("h_outVals = [ ");
-    for(int i=0; i<TEST_SIZE; i++){ printf("%d ", h_outVals[i]); }
-    printf("];\nh_outPos = [ ");
-    for(int i=0; i<TEST_SIZE; i++){ printf("%d ", h_outPos[i]); }
+    printf("h_outVals =  [ ");
+    for(int i=0; i<TEST_SIZE; i++){ printf("%2d ", h_outVals[i]); }
+    printf("];\nh_outPos =   [ ");
+    for(int i=0; i<TEST_SIZE; i++){ printf("%2d ", h_outPos[i]); }
     printf("];\n");
 
     free(h_inVals);
