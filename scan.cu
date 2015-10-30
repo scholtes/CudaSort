@@ -30,7 +30,7 @@ __global__ void partialScan(unsigned int *d_in,
     }
 
     // Shift when copying the result so as to make it an exclusive scan
-    if(tx + 1 < BLOCK_WIDTH) {
+    if(tx +1 < BLOCK_WIDTH && index + 1 < n) {
         d_out[index + 1] = temp[tx];
     }
     d_out[0] = 0;
