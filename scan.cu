@@ -18,7 +18,7 @@ __global__ void partialScan(unsigned int *d_in,
 
     if(index < n) {
         temp[tx] = d_in[index];
-    }
+    } else { temp[tx] = 0; }
     __syncthreads();
 
     // Perform the actual scan
@@ -56,14 +56,17 @@ void totalScan(unsigned int *d_in, unsigned int *d_out, size_t n) {
     size_t numBlocks = CEILING_DIVIDE(n, BLOCK_WIDTH);
     unsigned int *d_total;
     cudaMalloc(&d_total, sizeof(unsigned int) * numBlocks);
+    cudaMemset(d_total, 0, sizeof(unsigned int) * numBlocks);
 
     partialScan<<<numBlocks, BLOCK_WIDTH>>>(d_in, d_out, d_total, n);
 
     if(numBlocks > 1) {
         unsigned int *d_total_scanned;
         cudaMalloc(&d_total_scanned, sizeof(unsigned int) * numBlocks);
+        cudaMemset(d_total_scanned, 0, sizeof(unsigned int) * numBlocks);
 
         totalScan(d_total, d_total_scanned, numBlocks);
+
         mapScan<<<numBlocks, BLOCK_WIDTH>>>(d_out, d_total_scanned, n);
 
         cudaFree(d_total_scanned);

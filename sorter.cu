@@ -1,9 +1,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#define TEST_SIZE (424*520)
+#define TEST_SIZE 35 // (424*520)
 #define RAND_RANGE 100
-#define BLOCK_WIDTH 32
+#define BLOCK_WIDTH 4 // 32
 #define CEILING_DIVIDE(X, Y) (1 + (((X) - 1) / (Y)))
 
 void printTest(unsigned int *d_arr, size_t size) {
